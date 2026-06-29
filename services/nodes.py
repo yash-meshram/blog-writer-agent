@@ -23,7 +23,7 @@ def orchestrator(state: State) -> dict:
 def fanout(state: State):
     return [
         Send(
-            "workers",
+            "worker",
             {
                 "task": task,
                 "topic": state["topic"],
@@ -38,7 +38,7 @@ def worker(payload: dict) -> dict:
     task = payload["task"]
     topic = payload["topic"]
     plan = payload["plan"]
-    blog_title = plan["blog_title"]
+    blog_title = plan.blog_title
     
     section_content = llm.invoke(
         [
@@ -57,7 +57,7 @@ def worker(payload: dict) -> dict:
         ]
     ).content.strip()
     
-    return {"sections": section_content}
+    return {"sections": [section_content]}
 
 
 def reducer(state: State) -> dict:
