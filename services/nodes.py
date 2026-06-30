@@ -3,8 +3,18 @@ from models.llm import get_model
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import Send
 from pathlib import Path
+import re
 
 llm = get_model()
+
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _blog_filename(title: str) -> str:
+    slug = title.lower().replace(" ", "_")
+    slug = _INVALID_FILENAME_CHARS.sub("", slug)
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return f"{slug}.md"
 
 def orchestrator(state: State) -> dict:
     plan = llm.with_structured_output(Plan).invoke(
@@ -66,8 +76,8 @@ def reducer(state: State) -> dict:
     
     final = f"# {title}\n\n{body}\n"
     
-    filename = title.lower().replace(" ", "_") + ".md"
-    output_path = Path(f"data/{filename}")
+    output_path = Path("data") / _blog_filename(title)
+    output_path.parent.mkdir(parents = True, exist_ok = True)
     output_path.write_text(final, encoding = "utf-8")
     
     return {"final": final}
