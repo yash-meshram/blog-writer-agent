@@ -1,8 +1,6 @@
 from services.graph import app
 
-graph = app
-
-blog = graph.invoke(
+blog = app.invoke(
     {
         "topic": "Write a blog on quantum computing",
         "sections": []
