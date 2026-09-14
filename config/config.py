@@ -11,9 +11,11 @@ with open(BASE_DIR/"config.yaml", "r") as file:
 class LLMConfig(BaseModel):
     model_name: str
     temperature: float
+    openrouter_base_url: str
 
 class Settings(BaseSettings):
     GROQ_API_KEY: str
+    OPENROUTER_API_KEY: str
     llm: LLMConfig
     
     class Config:

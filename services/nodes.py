@@ -17,7 +17,10 @@ def _blog_filename(title: str) -> str:
     return f"{slug}.md"
 
 def orchestrator(state: State) -> dict:
-    planner = llm.with_structured_output(Plan)
+    planner = llm.with_structured_output(
+        Plan,
+        method = "json_schema"
+    )
     plan = planner.invoke(
         [
             SystemMessage(

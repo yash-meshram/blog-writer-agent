@@ -18,7 +18,7 @@ class Plan(BaseModel):
     blog_title: str
     tasks: List[Task]
     audience: str = Field(..., description = "Who this blog is for.")
-    tone: str = Field(..., description = "writing tone (example: practical, professional, casual, etc.).")
+    tone: str = Field(description = "writing tone (example: practical, professional, casual, etc.).")
     
 class State(TypedDict):
     topic: str

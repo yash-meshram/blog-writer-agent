@@ -1,3 +1,4 @@
 llm:
-  model_name: "meta-llama/llama-4-scout-17b-16e-instruct"
+  openrouter_base_url: "https://openrouter.ai/api/v1"
+  model_name: "nex-agi/nex-n2.5-mini:free"
   temperature: 0.75
