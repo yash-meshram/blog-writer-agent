@@ -1,4 +1,4 @@
-from config import settings
+from config.config import settings
 from langchain_groq import ChatGroq
 
 _model = None
@@ -7,8 +7,8 @@ def _get_model():
     if _model is None:
         _model = ChatGroq(
             api_key = settings.GROQ_API_KEY,
-            model = settings.META_VISION_MODEL,
-            temperature = settings.TEMPERATURE
+            model = settings.llm.model_name,
+            temperature = settings.llm.temperature
         )
         
     return _model
