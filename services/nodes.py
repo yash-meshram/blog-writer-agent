@@ -116,7 +116,6 @@ def worker(payload: dict) -> dict:
                 Bullets: {bullet_text}
                 Goal: {task.goal}
                 Tone: {plan.tone}
-                Goal: {task.goal}
                 Return only the section content in markdown.
                 """
             )
