@@ -1,4 +1,8 @@
 llm:
-  openrouter_base_url: "https://openrouter.ai/api/v1"
-  model_name: "nex-agi/nex-n2.5-mini:free"
-  temperature: 0.75
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "nvidia/nemotron-3-ultra-550b-a55b:free"
+  # base_url: "https://api.groq.com/openai/v1"
+  # model_name: "minimaxai/minimax-m2.7"
+  # base_url: "https://router.huggingface.co/v1"
+  # model_name: "deepseek-ai/DeepSeek-V4.1-Flash:novita"
+  temperature: 0.5

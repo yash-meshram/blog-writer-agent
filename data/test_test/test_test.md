@@ -1,0 +1,1 @@
+# The Technical Trajectory to AGI: Scaling Laws, Architectures, and Deployment Realities in 2025-2027

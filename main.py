@@ -2,9 +2,9 @@ from services.graph import app
 
 blog = app.invoke(
     {
-        "topic": "Write a blog on quantum computing",
+        "topic": "Future of AI and AGI",
         "sections": []
     }
 )
 
-print(blog['final'])
+# print(blog['final'])

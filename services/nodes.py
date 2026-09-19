@@ -1,26 +1,126 @@
-from schemas.schema import State, Plan
-from models.llm import get_model
+from schemas.schema import EvidencePack, GlobalImagePlan, RouterDecision, State, Plan
+from models.llm import get_model, get_image_model
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import Send
 from pathlib import Path
 import re
+from typing import List
+from langchain_tavily import TavilySearch
+from config.config import settings
+from google.genai import types
 
 llm = get_model()
 
-_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+def router(state: State) -> dict:
+    topic = state["topic"]
+    decider = llm.with_structured_output(RouterDecision)
+    decision = decider.invoke(
+        [
+            SystemMessage(
+                content = """
+                You are a routing module for a technical blog planner.
+                Decide whether web research is needed BEFORE planning.
+                Modes:
+                - closed_book (needs_research=false):
+                Evergreen topics where correctness does not depend on recent facts (concepts, fundamentals).
+                - hybrid (needs_research=true):
+                Mostly evergreen but needs up-to-date examples/tools/models to be useful.
+                - open_book (needs_research=true):
+                Mostly volatile: weekly roundups, "this week", "latest", rankings, pricing, policy/regulation.
+                If needs_research=true:
+                - Output 3–10 high-signal queries.
+                - Queries should be scoped and specific (avoid generic queries like just "AI" or "LLM").
+                - If user asked for "last week/this week/latest", reflect that constraint IN THE QUERIES.
+                """
+            ),
+            HumanMessage(
+                content = f"Topic: {topic}"
+            )
+        ]
+    )
+    
+    return {
+        "needs_reserach": decision.needs_research,
+        "research_type": decision.research_type,
+        "queries": decision.queries
+    }
+    
+    
+def route_next(state: State) -> str:
+    return "researcher" if state["needs_reserach"] else "orchestrator"
 
 
-def _blog_filename(title: str) -> str:
-    slug = title.lower().replace(" ", "_")
-    slug = _INVALID_FILENAME_CHARS.sub("", slug)
-    slug = re.sub(r"_+", "_", slug).strip("_")
-    return f"{slug}.md"
+def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
+    tool = TavilySearch(
+        tavily_api_key = settings.TAVILY_API_KEY,
+        max_results = max_results
+    )
+    results = tool.invoke(
+        {
+            "query": query
+        }
+    )["results"]
+    results_list: List[dict] = []
+    for result in results or []:
+        results_list.append(
+            {
+                "title": result.get("title", ""),
+                "url": result.get("url", ""),
+                "content": result.get("content", ""),
+                "published_at": result.get("published_at", ""),
+                "source": result.get("source", "")
+            }
+        )
+    
+    return results_list
+
+
+def researcher(state: State) -> dict:
+    queries = state["queries"]
+    max_results = 3
+    results: List[dict] = []
+    
+    for query in queries:
+        results.append(
+            _tavily_search(query = query, max_results = max_results)
+        )
+        
+    if not results:
+        return {"evidence": []}
+    
+    research = llm.with_structured_output(EvidencePack)
+    reserached_data = research.invoke(
+        [
+            SystemMessage(
+                content = """
+                You are a research synthesizer for technical writing.
+                Given raw web search results, produce a deduplicated list of EvidenceItem objects.
+                Rules:
+                - Only include items with a non-empty url.
+                - Prefer relevant + authoritative sources (company blogs, docs, reputable outlets).
+                - If a published date is explicitly present in the result payload, keep it as YYYY-MM-DD.
+                If missing or unclear, set published_at=null. Do NOT guess.
+                - Keep snippets short.
+                - Deduplicate by URL.
+                """
+            ),
+            HumanMessage(content = f"results: \n{results}")
+        ]
+    )
+    
+    return {"evidence": [evidence for evidence in reserached_data]}
+
 
 def orchestrator(state: State) -> dict:
-    planner = llm.with_structured_output(
-        Plan,
-        method = "json_schema"
-    )
+    print("================================================================================")
+    print(state)
+    print("================================================================================")
+    topic = state["topic"]
+    mode = state.get("mode", "closed_book")
+    evidence = state.get("evidence", [])
+    
+    planner = llm.with_structured_output(Plan)
     plan = planner.invoke(
         [
             SystemMessage(
@@ -53,10 +153,20 @@ def orchestrator(state: State) -> dict:
                 """
             ),
             HumanMessage(
-                content = f"Topic: {state["topic"]}"
+                content = (
+                    f"Topic: {topic}"
+                    f"Mode: {mode}"
+                    f"Evidence (if empty ignore it): {evidence}"
+                )
             )
         ]   
     )
+    
+    # Saving state in state.json file
+    # with open("state_orchestrator.json", "w", encoding="utf-8") as f:
+    #     json.dump(state, f, indent=4, default=str)
+    #
+    
     return {"plan": plan}
 
 
@@ -67,7 +177,9 @@ def fanout(state: State):
             {
                 "task": task,
                 "topic": state["topic"],
-                "plan": state["plan"]
+                "mode": state.get("mode", "closed_book"),
+                "plan": state["plan"],
+                "evidence": state["evidence"]
             }
         )
         for task in state["plan"].tasks
@@ -77,7 +189,10 @@ def fanout(state: State):
 def worker(payload: dict) -> dict:
     task = payload["task"]
     topic = payload["topic"]
+    mode = payload.get("mode", "closed_book")
     plan = payload["plan"]
+    evidence = payload.get("evidence", [])
+    
     bullet_text = "\n- ".join(task.bullets)
     
     section_content = llm.invoke(
@@ -105,34 +220,160 @@ def worker(payload: dict) -> dict:
                 - Use short paragraphs, bullet lists where helpful, and code fences for code.
                 - Avoid fluff. Avoid marketing language.
                 - If you include code, keep it focused on the bullet being addressed.
+                - Add source wherever required.
                 """
             ),
             HumanMessage(
                 content = f"""
                 Blog: {plan.blog_title}
+                Blog type: {plan.blog_type}
+                Audience: {plan.audience}
+                Constrains: {plan.constrains}
                 Topic: {topic}
+                Mode: {mode}
                 Section: {task.title}
                 Brief: {task.brief}
                 Bullets: {bullet_text}
                 Goal: {task.goal}
                 Tone: {plan.tone}
+                Tag: {task.tags}
+                Requires research: {task.requires_research}
+                Requires Citation: {task.requires_citation}
+                Requires Code: {task.requires_code}
+                Evidence (if empty igmore): {evidence}
                 Return only the section content in markdown.
                 """
             )
         ]
     ).content.strip()
     
-    return {"sections": [section_content]}
+    return {"sections": [(task.id, section_content)]}
+
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
+def _blog_foldername(title: str) -> str:
+    slug = title.lower().replace(" ", "_")
+    slug = _INVALID_FILENAME_CHARS.sub("", slug)
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return f"{slug}"
+
+# def reducer(state: State) -> dict:
+#     title = state["plan"].blog_title
+#     ordered_sections = [section for _, section in sorted(state["sections"], key = lambda x: x[0])]
+#     body = "\n\n".join(ordered_sections).strip()
+    
+#     final = f"# {title}\n\n{body}\n"
+    
+#     output_path = Path("data") / _blog_filename(title)
+#     output_path.parent.mkdir(parents = True, exist_ok = True)
+#     output_path.write_text(final, encoding = "utf-8")
+    
+#     return {"final": final}
 
 
-def reducer(state: State) -> dict:
+def merge_content(state: State) -> dict:
     title = state["plan"].blog_title
-    body = "\n\n".join(state["sections"]).strip()
+    ordered_sections = [section for _, section in sorted(state["sections"], key = lambda x: x[0])]
+    body = "\n\n".join(ordered_sections).strip()
+    blog_content = f"# {title}\n\n{body}\n"
     
-    final = f"# {title}\n\n{body}\n"
+    return {"blog_content": blog_content}
+
+
+def decide_images(state: State) -> dict:
+    image_planner = llm.with_structured_output(GlobalImagePlan)
+    blog_content = state["blog_content"]
+    plan = state["plan"]
     
-    output_path = Path("data") / _blog_filename(title)
+    image_plan = image_planner.invoke(
+        [
+            SystemMessage(
+                content = """
+                You are an expert technical editor.
+                Decide if images/diagrams are needed for THIS blog.
+
+                Rules:
+                - Max 3 images total.
+                - Each image must materially improve understanding (diagram/flow/table-like visual).
+                - Insert placeholders exactly: [[IMAGE_1]], [[IMAGE_2]], [[IMAGE_3]].
+                - If no images needed: md_with_placeholders must equal input and images=[].
+                - Avoid decorative images; prefer technical diagrams with short labels.
+                Return strictly GlobalImagePlan.
+                """
+            ),
+            HumanMessage(
+                content = f"""
+                Blog type: {plan.blog_type}
+                Topic: {state['topic']}
+                Blog content: {blog_content}
+                
+                Insert placeholders + propose image prompts.
+                """
+            )
+        ]
+    )
+    
+    return {
+        "blog_with_placeholder": image_plan.blog_with_placeholder,
+        "image_specs": image_plan.images
+    }
+
+# import json
+def generate_and_place_images(state: State) -> dict:
+    
+    # Saving state in state.json file
+    # with open("state.json", "w", encoding="utf-8") as f:
+    #     json.dump(state, f, indent=4, default=str)
+    #
+        
+    plan = state["plan"]
+    
+    content = state.get("blog_with_placeholder", "") or state["blog_content"]
+    image_specs = state.get("image_specs", []) or []
+    
+    blog_title = _blog_foldername(plan.blog_title)
+    
+    output_path = Path(f"data/{blog_title}/{blog_title}.md")
     output_path.parent.mkdir(parents = True, exist_ok = True)
-    output_path.write_text(final, encoding = "utf-8")
+            
+    if not image_specs:
+        output_path.write_text(content, encoding = "utf-8")
+        return {"final": content}
     
-    return {"final": final}
+    for image in image_specs:
+        placeholder = image["placeholder"]
+        filename = image["filename"]
+        image_output_path = Path(f"data/{blog_title}/{filename}")
+        
+        if not image_output_path.exists():
+            try:
+                image_llm = get_image_model()
+                image_bytes = image_llm.models.generate_content(
+                    model="gemini-2.5-flash-image",
+                    contents = image["prompt"],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        safety_settings=[
+                            types.SafetySetting(
+                                category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                                threshold="BLOCK_ONLY_HIGH",
+                            )
+                        ],
+                    ),
+                )
+                image_output_path.write_bytes(image_bytes)
+            except Exception as e:
+                prompt_block = (
+                    f"> **[IMAGE GENERATION FAILED]** {image.get('caption','')}\n>\n"
+                    f"> **Alt:** {image.get('alt','')}\n>\n"
+                    f"> **Prompt:** {image.get('prompt','')}\n>\n"
+                    f"> **Error:** {e}\n"
+                )
+                content = content.replace(placeholder, prompt_block)
+                continue
+            
+        img_md = f"![{image['alt']}](data/ {blog_title} / {filename})\n*{image['caption']}*"
+        content = content.replace(placeholder, img_md)
+    
+    output_path.write_text(content, encoding = "utf-8")
+    return {"final": content}
+                
